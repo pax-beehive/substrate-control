@@ -1,99 +1,111 @@
 # Substrate Control
 
-[Agent Substrate](https://github.com/agent-substrate/substrate) 的 Web 控制台：Actor 生命周期管理、Worker/WorkerPool/ActorTemplate（CRD）管理、LLM 网关（LiteLLM）虚拟 key 与上游模型管理、Secret 管理，以及向 Actor 直接下发任务的 Task 面板。
+A web console for [Agent Substrate](https://github.com/agent-substrate/substrate): actor lifecycle management, Worker/WorkerPool/ActorTemplate (CRD) management, LLM gateway (LiteLLM) virtual keys and upstream model registry, Kubernetes Secrets, and a Task panel for sending requests directly to your actors.
 
-## 架构
+[中文文档](docs/zh-CN/README.md)
+
+## Screenshots
+
+| Actors | Actor detail + Task panel |
+|---|---|
+| ![Actors](docs/screenshots/actors.png) | ![Actor detail](docs/screenshots/actor-detail.png) |
+
+| Monitoring (k8s + LLM usage) | Gateway (LiteLLM keys & models) |
+|---|---|
+| ![Monitoring](docs/screenshots/monitoring.png) | ![Gateway](docs/screenshots/gateway.png) |
+
+Light (Claude-cream) and dark themes are both supported; the shots above are dark mode.
+
+## Architecture
 
 ```
-浏览器 (React SPA)
+Browser (React SPA)
    │  /api/* JSON
    ▼
-Go 后端 (cmd/server)
-   ├─ gRPC ──► ate-api-server（kubectl port-forward + SA token 自动刷新，默认模式）
-   ├─ k8s API ──► ActorTemplate / WorkerPool CRD、Secret（client-go dynamic client）
-   ├─ HTTP ──► LiteLLM 网关（master key 从集群 Secret 读取，不过浏览器）
-   └─ HTTP ──► atenet-router（经 traefik ingress，代发 actor 流量）
+Go backend (cmd/server)
+   ├─ gRPC ──► ate-api-server   (kubectl port-forward + SA token locally;
+   │                             in-cluster service DNS + projected SA token in-pod)
+   ├─ k8s API ──► ActorTemplate / WorkerPool CRDs, Secrets (client-go dynamic client)
+   ├─ HTTP ──► LiteLLM gateway (master key read from cluster Secret, never proxied to the browser)
+   └─ HTTP ──► atenet-router (actor traffic, via ingress)
 ```
 
-- 后端默认 **portforward 模式**：自动管理 `kubectl port-forward` 到 `deploy/ate-api-server`（断了自动重连），用 `kubectl create token` 铸 SA token（1h，80% 生命周期刷新，Unauthenticated 时强制刷新重试一次）
-- 显式设置 `SUBSTRATE_GRPC_ADDR` 则切回**直连模式**（无认证，用于调试）
-- 前端 dev server（Vite, :5173）代理 `/api` 到 :8080；生产模式后端直接托管 `frontend/dist`
+Three connection modes, auto-detected at startup: `direct` (`SUBSTRATE_GRPC_ADDR` set), `incluster` (inside a pod, projected SA token), `portforward` (local default — manages `kubectl port-forward` + token minting/refresh itself).
 
-## 安装（任意 Substrate 集群）
+## Install (any Substrate cluster)
 
-控制台以 Deployment 形式部署进目标集群（ADR-0002）：
+Ships as a single container image (frontend embedded via `go:embed`; no Node required):
 
 ```bash
-# 1. 构建并推送镜像到你的 registry（或使用已发布镜像替换 deploy 中的 image）
+# 1. Build & push an image your cluster can pull
 docker buildx build --platform linux/amd64 -t <your-registry>/substrate-control:latest --push .
 
-# 2. 如使用自建 registry，修改 deploy/kustomization.yaml 的 images
-# 3. 部署（幂等，可重复执行）
+# 2. Point deploy/kustomization.yaml `images` at your registry
+# 3. Deploy (idempotent)
 kubectl apply -k deploy/
+
+# 4. Access
+kubectl port-forward -n substrate-control svc/substrate-control 8080:8080
 ```
 
-部署后后端自动检测集群内环境（incluster 模式）：直连 `api.ate-system.svc:443`，用投影的 ServiceAccount token（audience `api.ate-system.svc`）认证；RBAC 为最小必要（见 `deploy/rbac.yaml`，secrets 为 cluster 级——见 ADR-0002 的妥协说明）。访问方式：
+The backend auto-detects the in-cluster environment: dials `api.ate-system.svc:443` with a projected ServiceAccount token (audience `api.ate-system.svc`). RBAC is least-privilege (see `deploy/rbac.yaml`; cluster-wide secrets access is a documented compromise — see ADR-0002). LiteLLM and metrics-server are optional: the corresponding UI sections degrade gracefully when absent. Ingress exposure is the operator's choice (see the comment at the top of `deploy/kustomization.yaml`).
+
+## Local development
 
 ```bash
-kubectl port-forward -n substrate-control svc/substrate-control 8080:8080   # → http://localhost:8080
+# Prerequisite: kubeconfig points at the target cluster
+
+make build        # backend bin/server + frontend dist
+make run          # http://localhost:8080 (production mode, single port)
+
+# Dev mode (two terminals)
+./bin/server                    # backend :8080 (portforward mode)
+cd frontend && npm run dev      # frontend :5173 (hot reload, /api proxied)
 ```
 
-生产暴露自行选择 ingress（`deploy/kustomization.yaml` 顶部有说明）。LiteLLM / metrics-server 缺失时对应页面区块自动降级，核心功能不受影响。
+## Pages
 
-## 本地开发
-
-```bash
-# 前置：kubeconfig 指向目标集群（context microk8s）
-
-make build        # 构建后端 bin/server + 前端 dist
-make run          # http://localhost:8080（生产模式，单端口）
-
-# 开发模式（两个终端）
-./bin/server                    # 后端 :8080
-cd frontend && npm run dev      # 前端 :5173（热更新）
-```
-
-## 页面
-
-| 页面 | 功能 |
+| Page | What it does |
 |---|---|
-| Actors | 列表/详情/创建、suspend/resume（含 cold boot）/pause/delete、**Task 面板**（直接向 actor 发 HTTP 请求下任务） |
-| Workers | 物理 worker 列表（total/assigned/idle 统计） |
-| Monitoring | 聚合监控：节点/pod CPU 内存（metrics-server）、substrate 计数、LiteLLM spend/token 用量、最近请求日志 |
-| Templates | ActorTemplate 创建（表单/YAML，harness 预设 Claude Code、Codex）/删除/详情 |
-| Worker Pools | WorkerPool 创建（labels 与模板 workerSelector 对接）/删除/详情 |
-| Secrets | k8s Opaque secret 管理（值只写不回显） |
-| Gateway | LiteLLM 管理：Virtual Keys（签发/删除/一键存成 k8s Secret）、Models（注册上游平台模型，apiKey 加密落盘） |
-| Atespaces | atespace 增删查 |
+| Actors | List/detail/create actors; suspend / resume (incl. cold boot) / pause / delete; **Task panel** (send HTTP requests straight to the actor) |
+| Workers | Physical worker inventory (total / assigned / idle) |
+| Monitoring | Node & pod CPU/memory (metrics-server), substrate counts, LiteLLM spend/token usage, recent request logs |
+| Templates | ActorTemplate create (form/YAML, harness presets for Claude Code & Codex) / delete / inspect |
+| Worker Pools | WorkerPool create (labels matched by template workerSelector) / delete / inspect |
+| Secrets | k8s Opaque secrets (write-only values, never displayed) |
+| Gateway | LiteLLM admin: virtual keys (generate/delete/save-as-k8s-Secret) and upstream model registry (credentials encrypted at rest) |
+| Atespaces | Atespace create / delete / list |
 
-## 配置（环境变量）
+## Configuration (env)
 
-| 变量 | 默认值 | 说明 |
+| Variable | Default | Purpose |
 |---|---|---|
-| `LISTEN_ADDR` | `:8080` | HTTP 监听 |
-| `SUBSTRATE_GRPC_ADDR` | 空 | 设置后启用直连模式（跳过 port-forward/auth） |
-| `SUBSTRATE_PF_NAMESPACE` / `SUBSTRATE_PF_TARGET` / `SUBSTRATE_PF_LOCAL_PORT` | `ate-system` / `deploy/ate-api-server` / `18443` | port-forward 参数 |
-| `SUBSTRATE_SA` / `SUBSTRATE_SA_NAMESPACE` / `SUBSTRATE_TOKEN_AUDIENCE` | `ate-api-server` / `ate-system` / `api.ate-system.svc` | SA token 参数 |
-| `SUBSTRATE_ROUTER_ADDR` | `http://100.125.72.76:31358` | actor 流量入口（Task 面板代理目标） |
-| `LITELLM_URL` | `http://100.125.72.76:31358/litellm` | LiteLLM 管理面地址 |
-| `LITELLM_MASTER_KEY` | 空 | 覆盖 master key；默认从集群 Secret `litellm/litellm-secrets` 读取 |
-| `KUBECONFIG` | 标准规则 | k8s 访问 |
+| `LISTEN_ADDR` | `:8080` | HTTP listen address |
+| `SUBSTRATE_GRPC_ADDR` | empty | When set: direct mode (no port-forward/auth) |
+| `SUBSTRATE_API_ADDR` | `api.ate-system.svc:443` | In-cluster API address override |
+| `SUBSTRATE_TOKEN_FILE` | `/run/ateapi-token/token` | In-cluster SA token path |
+| `SUBSTRATE_PF_NAMESPACE` / `SUBSTRATE_PF_TARGET` / `SUBSTRATE_PF_LOCAL_PORT` | `ate-system` / `deploy/ate-api-server` / `18443` | port-forward parameters |
+| `SUBSTRATE_SA` / `SUBSTRATE_SA_NAMESPACE` / `SUBSTRATE_TOKEN_AUDIENCE` | `ate-api-server` / `ate-system` / `api.ate-system.svc` | token minting parameters (portforward mode) |
+| `SUBSTRATE_ROUTER_ADDR` | `http://100.125.72.76:31358` (in-cluster: `http://atenet-router.ate-system.svc`) | actor traffic entrypoint (Task panel proxy target) |
+| `LITELLM_URL` | `http://100.125.72.76:31358/litellm` (in-cluster: `http://litellm.litellm.svc:4000`) | LiteLLM admin endpoint |
+| `LITELLM_MASTER_KEY` | empty | Overrides the master key; by default read from cluster Secret `litellm/litellm-secrets` |
+| `KUBECONFIG` | standard rules | k8s access (local modes) |
 
-## 开发
+## Development
 
 ```bash
-make proto   # 重新生成 gRPC 代码（proto/ateapipb → gen/，工具装在 ./bin）
-make tidy    # go mod tidy + 前端类型检查
+make proto   # regenerate gRPC code (proto/ateapipb → gen/; toolchain vendored in ./bin)
+make tidy    # go mod tidy + frontend typecheck
 ```
 
-- API 契约：`API_CONTRACT.md`（前后端共享的接口定义）
-- gRPC 定义 vendored 自上游 `pkg/proto/ateapipb/ateapi.proto`
-- 前端：Vite + React + TS + Tailwind + shadcn/ui（Claude 奶白主题）+ TanStack Query（5s 轮询）
+- API contract: `API_CONTRACT.md` (single source of truth shared by backend and frontend)
+- gRPC definitions vendored from upstream `pkg/proto/ateapipb/ateapi.proto`
+- Frontend: Vite + React + TS + Tailwind + shadcn/ui + TanStack Query (5s polling)
 
-## 相关文档
+## Docs
 
-- `docs/cluster-setup.md` — **集群侧全部改动清单**（重跑上游安装脚本会被覆盖，务必阅读）
-- `docs/agent-images.md` — 如何开发/构建/部署 agent workload 镜像
-- `docs/adr/0001-tool-gateway.md` — ADR：Tool Registry + Tool Gateway（agent 工具统一注册、组装与收口拦截）
-- `docs/adr/0002-in-cluster-distribution.md` — ADR：分发模式——控制台作为集群内应用部署
-- `examples/agent-python/` — 最小 agent 镜像示例（LiteLLM 网关 + durableDir 状态持久化）
+- `docs/cluster-setup.md` (中文) — full record of cluster-side changes on the reference MicroK8s setup
+- `docs/agent-images.md` (中文) — how to build and deploy agent workload images
+- `docs/adr/0001-tool-gateway.md` — ADR: tool registry + tool gateway
+- `docs/adr/0002-in-cluster-distribution.md` — ADR: in-cluster distribution
+- `examples/agent-python/` — minimal agent image example (LiteLLM gateway + durableDir persistence)
