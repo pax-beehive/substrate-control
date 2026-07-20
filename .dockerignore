@@ -1,0 +1,5 @@
+# Keep the build context small; the frontend is rebuilt inside the image.
+**/node_modules
+bin
+frontend/dist
+.git

@@ -1,0 +1,24 @@
+# substrate-control — in-cluster distribution of the Substrate web console
+# (ADR-0002: docs/adr/0002-in-cluster-distribution.md).
+#
+# Ingress is intentionally NOT included: how the console is exposed
+# (ingress, NodePort, kubectl port-forward) is the cluster operator's choice.
+#
+# Install:  kubectl apply -k deploy/
+# Note: namespaces are set explicitly per resource (the kustomize `namespace:`
+# transformer is deliberately unused so the litellm-scoped Role/RoleBinding
+# keep their own namespace).
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+resources:
+  - namespace.yaml
+  - rbac.yaml
+  - deployment.yaml
+  - service.yaml
+
+# Users override the image with:
+#   kustomize edit set image localhost:32000/substrate-control=<registry>/substrate-control:<tag>
+images:
+  - name: localhost:32000/substrate-control
+    newTag: latest

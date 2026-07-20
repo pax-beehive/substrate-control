@@ -1,0 +1,12 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: substrate-control
+  namespace: substrate-control
+spec:
+  selector:
+    app: substrate-control
+  ports:
+    - name: http
+      port: 8080
+      targetPort: http

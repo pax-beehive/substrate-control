@@ -1,0 +1,58 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: substrate-control
+  namespace: substrate-control
+  labels:
+    app: substrate-control
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: substrate-control
+  template:
+    metadata:
+      labels:
+        app: substrate-control
+    spec:
+      serviceAccountName: substrate-control
+      containers:
+        - name: server
+          image: localhost:32000/substrate-control:latest
+          ports:
+            - name: http
+              containerPort: 8080
+          # All configuration has in-cluster defaults (ADR-0002):
+          #   SUBSTRATE_API_ADDR=api.ate-system.svc:443
+          #   SUBSTRATE_TOKEN_FILE=/run/ateapi-token/token
+          #   SUBSTRATE_ROUTER_ADDR=http://atenet-router.ate-system.svc
+          #   LITELLM_URL=http://litellm.litellm.svc:4000
+          readinessProbe:
+            httpGet:
+              path: /api/healthz
+              port: http
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /api/healthz
+              port: http
+            periodSeconds: 20
+          resources:
+            requests:
+              cpu: 50m
+              memory: 64Mi
+            limits:
+              cpu: 500m
+              memory: 256Mi
+          volumeMounts:
+            - name: ateapi-token
+              mountPath: /run/ateapi-token
+              readOnly: true
+      volumes:
+        - name: ateapi-token
+          projected:
+            sources:
+              - serviceAccountToken:
+                  audience: api.ate-system.svc
+                  expirationSeconds: 3600
+                  path: token

@@ -1,0 +1,57 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: valkey-cluster-repair
+  namespace: ate-system
+spec:
+  backoffLimit: 1
+  template:
+    metadata: {}
+    spec:
+      containers:
+      - command:
+        - /bin/sh
+        - -c
+        - "set -e\nCLI=\"valkey-cli --tls --cacert /etc/valkey-ca/ca.crt --cert /run/servicedns.podcert.ate.dev/credential-bundle.pem\
+          \ --key /run/servicedns.podcert.ate.dev/credential-bundle.pem\"\nfor i in\
+          \ 0 1 2 3 4 5; do\n  until getent hosts valkey-cluster-${i}.valkey-cluster-service.ate-system.svc\
+          \ >/dev/null 2>&1; do sleep 2; done\ndone\nfor i in 0 1 2 3 4 5; do\n  until\
+          \ $CLI -h valkey-cluster-${i}.valkey-cluster-service.ate-system.svc ping\
+          \ >/dev/null 2>&1; do\n    echo \"Waiting for valkey-cluster-${i} ping...\"\
+          ; sleep 2\n  done\n  echo \">>> resetting node $i\"\n  $CLI -h valkey-cluster-${i}.valkey-cluster-service.ate-system.svc\
+          \ cluster reset hard\ndone\nNODES=\"\"\nfor i in 0 1 2 3 4 5; do NODES=\"\
+          ${NODES} valkey-cluster-${i}.valkey-cluster-service.ate-system.svc:6379\"\
+          ; done\necho \">>> creating cluster\"\n$CLI --cluster create ${NODES} --cluster-replicas\
+          \ 1 --cluster-yes\necho \">>> cluster info:\"\n$CLI -h valkey-cluster-0.valkey-cluster-service.ate-system.svc\
+          \ cluster info | grep -E \"cluster_state|cluster_slots_assigned|cluster_known_nodes\"\
+          \n"
+        image: valkey/valkey:9.1@sha256:4963247afc4cd33c7d3b2d2816b9f7f8eeebab148d29056c2ca4d7cbc966f2d9
+        imagePullPolicy: IfNotPresent
+        name: init
+        resources: {}
+        volumeMounts:
+        - mountPath: /run/servicedns.podcert.ate.dev
+          name: servicedns
+        - mountPath: /etc/valkey-ca
+          name: valkey-ca-certs
+          readOnly: true
+      dnsPolicy: ClusterFirst
+      restartPolicy: Never
+      schedulerName: default-scheduler
+      securityContext: {}
+      terminationGracePeriodSeconds: 30
+      volumes:
+      - name: servicedns
+        secret:
+          defaultMode: 420
+          secretName: servicedns-cred
+      - name: valkey-ca-certs
+        projected:
+          defaultMode: 420
+          sources:
+          - secret:
+              items:
+              - key: ca.crt
+                path: ca.crt
+              name: valkey-ca-certs
+  ttlSecondsAfterFinished: 600
